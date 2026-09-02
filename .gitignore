@@ -1,0 +1,15 @@
+# System
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# No credentials
+*.env
+*.key
+*.pem
+
+# Private - not published
+journal.md
+personal-roadmap.md
+notes/
+notebook.md
