@@ -5,6 +5,7 @@ Links I use.
 ## Practice
 
 - [TryHackMe](https://tryhackme.com/)
+- [SoftwareSeguro] (https://www.softwareseguro.com.ar/)
 - [Hack The Box](https://www.hackthebox.com/)
 - [PortSwigger Web Security Academy](https://portswigger.net/web-security)
 - [OverTheWire](https://overthewire.org/wargames/)
