@@ -1,4 +1,4 @@
-# [Uso del Inspector] — [Software Seguro]
+# 1. Uso del Inspector — [Software Seguro]
 
 ## **EN**
 

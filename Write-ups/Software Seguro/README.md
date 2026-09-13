@@ -7,4 +7,5 @@
 | File | Topic |
 |---|---|
 | [`01-uso-del-inspector.md`](./01-uso-del-inspector.md) | Browser inspection — HTTP response headers, DOM manipulation via console |
- 
+ | [`02-nsa.md`](./02-nsa.md) | SQL Injection |
+| [`03-home-banking.md`](./03-home-banking.md) | SQL Injection — classic login bypass |
