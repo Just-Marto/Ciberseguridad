@@ -10,6 +10,12 @@ Links I use.
 - [PortSwigger Web Security Academy](https://portswigger.net/web-security)
 - [OverTheWire](https://overthewire.org/wargames/)
 
+## Python
+
+- [learnpython.org] https://www.learnpython.org/es/ 
+- [TryHackMe] https://tryhackme.com/room/pythonbasics 
+- [automatetheboringstuff] https://automatetheboringstuff.com/ 
+
 ## References
 
 - [OWASP Top 10](https://owasp.org/www-project-top-ten/)
