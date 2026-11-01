@@ -1,0 +1,272 @@
+# Pickle Rick — TryHackMe
+
+**Platform:** TryHackMe · **Difficulty:** Easy · **Date:** 2026-10-31
+
+---
+
+## 🇬🇧 English
+ 
+This is my write-up of **Pickle Rick**, an *Easy* TryHackMe room themed around Rick and Morty. I'm writing it the way I actually lived it: with the mistakes, the detours, the things I got wrong, and the hints I needed.
+ 
+---
+ 
+## The scenario
+ 
+The task is simple: exploit a web server to help Rick build a potion by collecting **three ingredients** scattered across the machine. It sounds straightforward, but each ingredient sits in a different place and at a different access level.
+ 
+---
+ 
+## Recon
+ 
+I started with the standard stuff:
+ 
+```bash
+nmap -sV <IP>
+whatweb http://<IP>/
+```
+ 
+- **nmap**: two open ports, 22 (SSH) and 80 (web). It told me which services were running and their versions (OpenSSH 8.2p1, Apache 2.4.41 on Ubuntu).
+- **whatweb**: confirmed Apache, Bootstrap, HTML5, Ubuntu, and the title "Rick is sup4r cool".
+---
+ 
+## Web enumeration
+ 
+I browsed the site as a normal user: nothing clickable, no `?id=` parameters, no extensions in the URL. So I moved on to what the browser receives but doesn't show:
+ 
+- **Page source (`Ctrl+U`)**: found a **username** in an HTML comment.
+- **`/robots.txt`**: a single line that I saved for later.
+- **`/sitemap.xml`**: empty.
+Two things that distracted me and turned out to be noise:
+ 
+- A `404` on `/favicon.ico` in the console. I thought I had to dig into it. It's just the tab icon, which the browser always requests and the server didn't have.
+- A "Source map error". Also noise from DevTools looking for a debug file the site never published.
+I learned to separate the real findings (username, robots.txt) from browser noise.
+ 
+---
+ 
+## The gobuster mess
+ 
+First I ran gobuster with a wordlist of my own that was empty, and it returned nothing.
+ 
+I fixed it with a real list that ships with Kali:
+ 
+```bash
+gobuster dir -u http://<IP>/ -w /usr/share/wordlists/dirb/common.txt -x php,txt,html
+```
+ 
+From the output I learned to read the HTTP codes: `200` exists, `301/302` redirects, `403` exists but forbidden, `404` doesn't exist (gobuster hides those). I discarded the whole `.htaccess`/`.hta` block (Apache noise) and kept the real stuff: `login.php`, `portal.php` (redirected to login), `robots.txt`, `assets/`.
+ 
+Bonus: it confused me to see `robots.txt` and `index.html` **twice**. That was because of `-x txt`: the list already included `robots.txt`, and gobuster also tried `robots` + the `txt` extension. Same path, listed twice.
+ 
+---
+ 
+## Getting into the portal
+ 
+`login.php` was the logical next step. I used the username from the source comment and the string from `robots.txt` as the password, and got into `portal.php`: a **command panel**.
+ 
+My first assumption was that it ran SSH commands. Wrong. It's a form that passes whatever I type straight to the server's **operating system** and returns the output. That's **command injection**, and the commands run as the web server's user, not as an SSH user. That's why port 22 was never needed.
+ 
+I confirmed the context:
+ 
+```bash
+whoami   # www-data
+```
+ 
+---
+ 
+## Ingredient 1
+ 
+I ran `ls -la` and saw the files. I tried `cat clue.txt` but the command was **disabled** ("to make it hard for future PICKLEEEE RICCCKKKK"). `nano` too.
+ 
+Since I couldn't use `cat`, I thought of `strings` and it worked. That's how I pulled the first ingredient out of a `.txt` in the web folder.
+ 
+I reasoned through the permissions: since I'm `www-data` and not `ubuntu`, the third block (others) applies to me on those files, not the owner's or the group's.
+ 
+---
+ 
+## Ingredient 2
+ 
+The `clue.txt` (read with `strings`) said: *"Look around the file system for the other ingredient."*
+ 
+My first reflex was to look only inside the web folder (`assets/`), and I found nothing. Then I thought in broader terms and ran `ls -la ../../..`, which took me to the top of the directory tree. I enumerated `/home` and **another user besides ubuntu** showed up. The second ingredient was in that user's home, in a file with **a space in its name** (`second ingredients`).
+ 
+The space brought back a problem I'd already hit in **Bandit**: the shell treats it as an argument separator. I solved it by escaping it, pulling the fix from my own Bandit notes:
+ 
+```bash
+strings /home/rick/second\ ingredients
+```
+ 
+---
+ 
+## Ingredient 3: the wall
+ 
+Here I hit a dead stop. Unlike the second one, **the room gives no hint** for the third. And I didn't know where to start.
+ 
+I was honest: I didn't know where it was or how to approach it. That's because the third ingredient touches a topic I haven't covered in theory yet: **privilege escalation**. The problem was no longer *finding* a file, but that I **didn't have permission to read it** as `www-data`.
+ 
+The reasoning, once I knew the name of the topic:
+ 
+1. The standard mechanism to run as another user is `sudo`.
+2. First, ask what the system lets me do: `sudo -l`.
+```
+User www-data may run the following commands:
+    (ALL) NOPASSWD: ALL
+```
+ 
+Breaking it down: `(ALL)` = as any user (including root); `NOPASSWD` = no password; `ALL` = any command. Translated: **full control of the machine**. It's the most permissive (and insecure) sudo config there is.
+ 
+To find where the third ingredient was, I thought: I didn't need to be root to look at `ubuntu`'s home; the whole point of escalating was to reach a place I couldn't read before. Which is the only home that requires being root? **root**'s. I enumerated `/root` with `sudo` to see the exact filename and read it.
+ 
+---
+ 
+## Being honest
+ 
+I solved the first two ingredients on my own: web enumeration, `strings` to get past the `cat` block, and widening the search to `/home`. I'm happy with that.
+ 
+For the third I had to turn to TryHackMe's Echo, where the concept of privilege escalation came from.
+ 
+## Takeaways
+ 
+- **Separate findings from noise.** The favicon `404` and the source maps were nothing.
+- **Read permissions based on who I am**, not on a fixed column. `whoami` / `id` first.
+- **`sudo -l` is the first privilege-escalation check.** `(ALL) NOPASSWD: ALL` is full root.
+ 
+
+---
+
+## 🇪🇸 Español
+
+Este es mi writeup de **Pickle Rick**, una room *Easy* de TryHackMe temática de Rick and Morty. Lo escribo como lo viví: con los errores, los desvíos, las cosas que confundí y las pistas que necesité.
+
+---
+
+## El escenario
+
+La consigna es sencilla: explotar un servidor web para ayudar a Rick a armar una poción, reuniendo **tres ingredientes** repartidos por la máquina. Suena directo, pero cada ingrediente está en un lugar distinto y con un nivel de acceso distinto.
+
+---
+
+## Reconocimiento
+
+Arranqué por lo estándar:
+
+```bash
+nmap -sV <IP>
+whatweb http://<IP>/
+```
+
+- **nmap**: dos puertos abiertos, el 22 (SSH) y el 80 (web). Me decía qué servicios había y sus versiones (OpenSSH 8.2p1, Apache 2.4.41 sobre Ubuntu).
+- **whatweb**: confirmó Apache, Bootstrap, HTML5, Ubuntu, y el título "Rick is sup4r cool".
+
+
+---
+
+## Enumeración web
+
+Revisé la web como usuario normal: no había nada clickeable, ni parámetros `?id=`, ni extensiones en la URL. Pasé a lo que el navegador recibe pero no muestra:
+
+- **Código fuente (`Ctrl+U`)**: encontré un **usuario** en un comentario HTML.
+- **`/robots.txt`**: una sola línea que deje guardada.
+- **`/sitemap.xml`**: vacío.
+
+Dos cosas que me distrajeron y resultaron ser ruido:
+
+- Un `404` a `/favicon.ico` en la consola. Pensé que había que indagarlo. Es solo el ícono de la pestaña, que el navegador pide siempre y el server no tenía.
+- Un "Source map error". También es ruido de las DevTools buscando un archivo de depuración que el sitio no publicó.
+
+Aprendí a separar los hallazgos reales (usuario, robots.txt) del ruido del navegador.
+
+---
+
+## El lío con gobuster
+
+
+Primero corrí gobuster con un wordlist mío que estaba vacío, y me devolvió nada. 
+
+Lo corregí con una lista de verdad que viene en la distribución de Kali:
+
+```bash
+gobuster dir -u http://<IP>/ -w /usr/share/wordlists/dirb/common.txt -x php,txt,html
+```
+
+De la salida aprendí a leer los códigos HTTP: `200` existe, `301/302` redirige, `403` existe pero prohibido, `404` no existe (gobuster los oculta). Descarté todo el bloque de `.htaccess`/`.hta` (ruido de Apache) y me quedé con lo real: `login.php`, `portal.php` (redirigía a login), `robots.txt`, `assets/`.
+
+Bonus: me confundió ver `robots.txt` e `index.html` **dos veces**. Era por el `-x txt`: la lista ya traía `robots.txt`, y además gobuster probaba `robots` + extensión `txt`. Misma ruta, listada dos veces.
+
+---
+
+## Entrando al portal
+
+`login.php` era lo más lógico a seguir. Usé el usuario del código fuente y la cadena de `robots.txt` como contraseña, y entré a `portal.php`: un **panel de comandos**.
+
+Mi suposición inicial fue que ejecutaba comandos SSH. Error. Es un formulario que le pasa lo que escribo directo al **sistema operativo del servidor** y me devuelve la salida. Eso es una **inyección de comandos**, y los comandos corren como el usuario del servidor web, no como un usuario con SSH. Por eso el puerto 22 nunca hizo falta.
+
+Confirmé el contexto:
+
+```bash
+whoami   # www-data
+```
+
+---
+
+## Ingrediente 1
+
+Hice `ls -la` y vi los archivos. Intenté `cat clue.txt` pero el comando estaba **deshabilitado** ("to make it hard for future PICKLEEEE RICCCKKKK"). `nano` también.
+
+Como no podía usar `cat`, pensé en `strings` y funcionó. Así saqué el primer ingrediente de un `.txt` de la carpeta web.
+
+Razoné los permisos: como soy `www-data` y no `ubuntu`, sobre esos archivos me rige el tercer bloque (others), no el del dueño ni el del grupo.
+
+---
+
+## Ingrediente 2
+
+El `clue.txt` (leído con `strings`) decía: *"Look around the file system for the other ingredient."*
+
+Mi primer reflejo fue mirar solo dentro de la carpeta web (`assets/`), y no encontré nada. Luego pense en una abstraccion mas grande y ejecute ls -la ../../..  que me llevo al inicio del directorio ~
+. Enumeré `/home` y apareció **otro usuario además de ubuntu**. En su home estaba el segundo ingrediente, en un archivo con **espacio en el nombre** (`second ingredients`).
+
+El espacio me trajo un problema que ya había tenido en **Bandit**: la shell lo interpreta como separador de argumentos. Lo resolví escapándolo, sacándolo de mi propio apunte de Bandit:
+
+```bash
+strings /home/rick/second\ ingredients
+```
+
+---
+
+## Ingrediente 3: el muro
+ 
+Acá me frené en seco. A diferencia del segundo, **la room no da ninguna pista** para el tercero. Y no sabía por dónde arrancar.
+ 
+Fui honesto: no sabía dónde estaba ni cómo encararlo. Esto es porque el tercer ingrediente toca un tema que todavía no vi en la teoría: la **escalación de privilegios**. El problema ya no era *encontrar* un archivo, sino que **no tenía permiso para leerlo** siendo `www-data`.
+ 
+El razonamiento, una vez que supe el nombre del tema:
+ 
+1. El mecanismo estándar para ejecutar como otro usuario es `sudo`.
+2. Antes de nada, hay que preguntar qué me permite el sistema: `sudo -l`.
+```
+User www-data may run the following commands:
+    (ALL) NOPASSWD: ALL
+```
+ 
+Desglosándolo: `(ALL)` = como cualquier usuario (incluido root); `NOPASSWD` = sin contraseña; `ALL` = cualquier comando. Traducido: **control total de la máquina**. Es la config de sudo más permisiva (e insegura) que existe.
+ 
+Para encontrar dónde estaba el tercer ingrediente, pensé: no necesitaba ser root para mirar el home de `ubuntu`; el sentido de escalar era llegar a un lugar que antes no podía leer. ¿Cuál es el único home que requiere ser root? El de **root**. Enumeré `/root` con `sudo` para ver el nombre exacto del archivo y lo leí.
+
+---
+
+
+## Siendo honesto
+
+Los dos primeros ingredientes los resolví solo: enumeración web, `strings` para saltar el bloqueo de `cat`, y expandir la búsqueda a `/home`. De eso estoy conforme.
+
+El tercero tuve que recurrir a Echo de TryHackMe donde estaba el concepto de escalación de privilegios.
+
+
+## Lo que me llevo
+
+- **Separar hallazgos del ruido.** El `404` de favicon y los source maps no eran nada.
+- **Leer los permisos según quién soy**, no por posición fija. `whoami` / `id` primero.
+- **`sudo -l` es el primer chequeo de escalación de privilegios.** `(ALL) NOPASSWD: ALL` es root total.
+
+
